@@ -1,0 +1,569 @@
+
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Space Defender</title>
+  <style>
+    body, html { margin:0; padding:0; overflow:hidden; background:#000; color:#0f0; font-family:sans-serif; }
+    canvas { display:block; background:radial-gradient(#001, #000); }
+    #ui { position:absolute; top:10px; left:50%; transform:translateX(-50%); text-align:center; z-index:2; }
+    #score, #lives, #power, #highscore { margin:5px; font:20px monospace; }
+    .btn { position:fixed; bottom:20px; width:60px; height:60px; background:rgba(0,255,0,0.2); border:2px solid #0f0; border-radius:50%; font-size:30px; line-height:56px; text-align:center; z-index:2; }
+    #leftBtn { left:20px; } #rightBtn { left:100px; } #shootBtn { right:20px; }
+    #startScreen { position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:flex;flex-direction:column;justify-content:center;align-items:center;z-index:3; }
+    #startBtn { padding:15px 30px; font-size:24px; background:#0f0; color:#000; border:none; border-radius:10px; cursor:pointer; }
+  
+    #power {
+      font-weight: bold;
+      font-size: 18px;
+      animation: rainbow 2s linear infinite;
+    }
+
+    @keyframes rainbow {
+      0% { color: red; }
+      16% { color: orange; }
+      33% { color: yellow; }
+      50% { color: lime; }
+      66% { color: cyan; }
+      83% { color: blue; }
+      100% { color: magenta; }
+    }
+</style>
+
+</head>
+<body>
+  <div id="startScreen">
+    <div style="font-size:36px;color:#0f0;margin-bottom:20px;">Space Defender</div>
+    <div id="highscoreStart" style="font-size:20px;color:#ff0;margin-bottom:20px;"></div>
+    <button id="startBtn">Start</button>
+  </div>
+  <div id="ui" style="display:none;">
+    <div id="score">Score: 0</div>
+    <div id="lives">Live: 3</div>
+    <div id="power"></div>
+    <div id="highscore">High Score: 0</div>
+  </div>
+  <canvas id="game"></canvas>
+  <div id="leftBtn" class="btn" style="display:none;">◀</div>
+  <div id="rightBtn" class="btn" style="display:none;">▶</div>
+  <div id="shootBtn" class="btn" style="display:none;">✹</div>
+
+
+
+  <script>
+    const currentLanguage = 'en'; // Oder 'en' für Englisch
+
+    
+
+    const canvas = document.getElementById('game'),
+          ctx = canvas.getContext('2d');
+    let W, H;
+    function resize(){ W = canvas.width = innerWidth; H = canvas.height = innerHeight; }
+    addEventListener('resize', resize);
+    resize();
+
+    let score, lives, highScore, powerActive, powerTimer;
+    let ship, bullets, asteroids, enemies, enemyBullets, powerups, boss, bossBullets, gameLoopId;
+    let leftPressed=false, rightPressed=false;
+    let bossWave = 0;
+    let nextBossScore = 1000;
+    
+    let laserTimer = 0;
+    powerActive = null;
+
+
+    function activateLaser(){
+      powerActive = 'laser';
+      laserTimer = 300; // z.B. 300 Frames ≈ 5 Sekunden bei 60fps
+    }
+    
+
+
+
+    highScore = +localStorage.getItem('highScore') || 0;
+    document.getElementById('highscoreStart').innerText = 'High Score: ' + highScore;
+
+    class Ship {
+      constructor(){
+        this.x = W/2; this.y = H - 60; this.size = 40;
+        this.speed = 8; this.cooldown = 0; this.laser = false;
+      }
+      draw(){
+        ctx.fillStyle = '#0f0';
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y);
+        ctx.lineTo(this.x - this.size/2, this.y + this.size);
+        ctx.lineTo(this.x + this.size/2, this.y + this.size);
+        ctx.closePath();
+        ctx.fill();
+      }
+      move(dir){
+        this.x = Math.max(this.size/2, Math.min(W - this.size/2, this.x + dir * this.speed));
+      }
+      shoot(){
+        if (this.cooldown === 0){
+          if (this.laser) laser.beam(this.x, this.y);
+          else bullets.push(new Bullet(this.x, this.y, -12));
+          this.cooldown = this.laser ? 180 : 15;
+          playSound(440,0.05);
+        }
+      }
+      update(){
+        if (this.cooldown>0) this.cooldown--;
+      }
+    }
+    B=0;
+    class Laser {
+      constructor(){ this.active=false; this.timer=0; this.x=0; this.y=0; }
+      beam(x,y){ this.active=true; this.timer=180; this.x=x; this.y=y; }
+      update(){
+        if (!this.active) return;
+        this.timer--;
+        this.x = ship.x;
+        if (this.timer <= 0){
+          this.active=false; ship.laser=false;
+        } else {
+          // Schaden: Asteroiden & Gegner
+          asteroids = asteroids.filter(a=>{
+            if (Math.abs(a.x - this.x)<5 && a.y < this.y){
+              splitAsteroid(a); score+=10; updateUI();
+              return false;
+            }
+            return true;
+          });
+          enemies = enemies.filter(e=>{
+            if (Math.abs(e.x - this.x)<5){
+              e.health--; return e.health>0;
+            }
+            return true;
+          });
+          if (boss && Math.abs(boss.x - this.x)<5){
+            boss.health--;
+            if (boss.health<=0){
+              score+=200; boss=null; updateUI();
+            }
+          }
+        }
+      }
+      draw(){
+        if (!this.active) return;
+        ctx.strokeStyle='#0ff'; ctx.lineWidth=4;
+        ctx.beginPath(); ctx.moveTo(this.x,0); ctx.lineTo(this.x, this.y); ctx.stroke();
+      }
+    }
+
+    class Bullet {
+      constructor(x,y,dy){ this.x=x; this.y=y; this.r=5; this.dy=dy; }
+      update(){ this.y += this.dy; }
+      draw(){
+        ctx.fillStyle='#ff0'; ctx.beginPath();
+        ctx.arc(this.x,this.y,this.r,0,2*Math.PI); ctx.fill();
+      }
+    }
+
+    class Asteroid {
+      constructor(x,y,r){
+        this.x = x||Math.random()*(W-40)+20;
+        this.y = y||-20;
+        this.r = r||(Math.random()*20+20);
+        this.speed = Math.random()*2+1;
+      }
+      update(){ this.y += this.speed; }
+      draw(){
+        ctx.strokeStyle='#888'; ctx.lineWidth=3; ctx.beginPath();
+        for(let i=0;i<8;i++){
+          let t = i/8*2*Math.PI;
+          ctx.lineTo(this.x+Math.cos(t)*this.r, this.y+Math.sin(t)*this.r);
+        }
+        ctx.closePath(); ctx.stroke();
+      }
+    }
+
+    class Enemy {
+      constructor(){
+        this.x = Math.random()*(W-60)+30;
+        this.y = 50;
+        this.size = 30;
+        this.speed = 2;
+        this.dir = 1;
+        this.cooldown = 100;
+        this.health = 3;
+      }
+      update(){
+        this.x += this.speed * this.dir;
+        if (this.x < this.size/2 || this.x > W-this.size/2) this.dir *= -1;
+        if (--this.cooldown === 0){
+          this.shoot();
+          this.cooldown = 100;
+        }
+      }
+      draw(){
+        ctx.fillStyle='#f00';
+        ctx.fillRect(this.x-this.size/2, this.y-this.size/2, this.size, this.size);
+      }
+      shoot(){
+        enemyBullets.push(new Bullet(this.x, this.y+this.size/2, 6));
+        playSound(200,0.2);
+      }
+    }
+
+    class PowerUp {
+      constructor(type){
+        this.type = type;
+        this.x = Math.random()*(W-30)+15;
+        this.y = -15;
+        this.speed = 2;
+      }
+      update(){ this.y += this.speed; }
+      draw(){
+        if (this.type==='nuke'){
+          ctx.fillStyle='#f00';
+          ctx.beginPath(); ctx.arc(this.x,this.y,12,0,2*Math.PI); ctx.fill();
+          ctx.fillStyle='#000'; ctx.font='12px monospace'; ctx.fillText('💥', this.x-6, this.y+4);
+        } else {
+          ctx.fillStyle=this.type==='life'?'#fff':'#0ff';
+          ctx.beginPath(); ctx.arc(this.x,this.y,10,0,2*Math.PI); ctx.fill();
+          ctx.fillStyle='#000'; ctx.font='12px monospace';
+          ctx.fillText(this.type==='life'?'+':'L', this.x-5, this.y+4);
+        }
+      }
+    }
+
+    class Boss {
+  constructor(){
+    this.x = W/2; this.y = 100;
+    this.size = 160;
+    this.health = 60 + bossWave * 20;
+    this.maxHealth = this.health;
+    this.speed = 2;
+    this.dir = 1;
+    this.cooldown = 100;
+    this.laserTimer = 0;
+    this.minionCooldown = 300;
+  }
+
+  update(){
+    this.x += this.speed * this.dir;
+    if (this.x < this.size/2 || this.x > W - this.size/2) this.dir *= -1;
+
+    // Standard-Schuss
+    if (--this.cooldown <= 0) {
+      bossBullets.push(new Bullet(this.x, this.y + this.size/2, 8));
+      playSound(150, 0.2);
+      this.cooldown = 60;
+    }
+
+    // Laserangriff (alle 10 Sekunden)
+    if (--this.laserTimer <= 0) {
+      this.fireLaser();
+      this.laserTimer = 600;
+    }
+
+    // Minions spawnen
+    if (--this.minionCooldown <= 0) {
+      enemies.push(new Enemy());
+      enemies.push(new Enemy());
+      this.minionCooldown = 500 - bossWave * 50;
+    }
+  }
+
+  fireLaser(){
+    for (let i = -2; i <= 2; i++) {
+      bossBullets.push(new Bullet(this.x + i * 20, this.y + this.size/2, 12));
+    }
+    playSound(100, 0.5);
+  }
+
+  draw(){
+    // Körper
+    ctx.fillStyle = '#f0f';
+    ctx.fillRect(this.x - this.size/2, this.y - this.size/2, this.size, this.size);
+
+    // Lebensleiste mit Hintergrund
+    const barWidth = this.size;
+    const barHeight = 10;
+    const lifeRatio = this.health / this.maxHealth;
+    ctx.fillStyle = '#222';
+    ctx.fillRect(this.x - barWidth/2, this.y - this.size/2 - 16, barWidth, barHeight);
+    ctx.fillStyle = `hsl(${lifeRatio * 120}, 100%, 50%)`;
+    ctx.fillRect(this.x - barWidth/2, this.y - this.size/2 - 16, barWidth * lifeRatio, barHeight);
+  }
+}
+
+
+
+    const laser = new Laser();
+
+    function splitAsteroid(a){
+      let nr = a.r/2;
+      if (nr>10){
+        asteroids.push(new Asteroid(a.x,a.y,nr));
+        asteroids.push(new Asteroid(a.x,a.y,nr));
+      }
+    }
+
+    let bossSpawned = false;  // ganz oben im Script, vor spawn()
+
+    function spawn(){
+  // Boss erscheint bei bestimmten Punktestufen (beginnend bei 1000, dann 2000, 4000, ...)
+  if (!boss && score >= nextBossScore){
+    bossWave++;
+    nextBossScore = 1000 * (2 ** bossWave); // Punktebedarf verdoppelt sich pro Boss
+    boss = new Boss();
+    asteroids = []; enemies = []; powerups = []; enemyBullets = []; bossBullets = [];
+    return;
+  }
+
+  // Normale Gegner-Phase
+  if (!boss){
+    if (Math.random() < 0.02) asteroids.push(new Asteroid());
+    if (Math.random() < 0.004) powerups.push(new PowerUp(Math.random() < 0.5 ? 'life' : 'laser'));
+    if (Math.random() < 0.001) enemies.push(new Enemy());
+  } else {
+    // 💥 Bosskampf: Seltene PowerUps, aber KEIN 'nuke'
+    if (Math.random() < 0.001) powerups.push(new PowerUp('life'));
+    if (Math.random() < 0.001) powerups.push(new PowerUp('laser'));
+  }
+}
+
+
+
+
+    function update(){
+  ship.update();
+  laser.update();
+  if (leftPressed)  ship.move(-1);
+  if (rightPressed) ship.move(1);
+
+  // 1) Spawnen von Objekten
+  spawn();
+
+  // 2) Update aller feindlichen Projektile
+// 2) Update aller feindlichen Projektile
+enemyBullets.forEach((b,i)=>{
+  b.update();
+  if (b.y > H || Math.hypot(b.x - ship.x, b.y - ship.y) < b.r + ship.size/2) {
+    if (b.y <= H) hitPlayer();
+    enemyBullets.splice(i,1);
+  }
+});
+
+// 🔥 NEU: Boss-Projektile
+bossBullets.forEach((b, i) => {
+  b.update();
+  if (b.y > H || Math.hypot(b.x - ship.x, b.y - ship.y) < b.r + ship.size / 2) {
+    if (b.y <= H) hitPlayer();
+    bossBullets.splice(i, 1);
+  }
+});
+
+
+  // 3) Update Asteroiden, Gegner und Boss
+  asteroids.forEach(a=>a.update());
+  // Asteroiden treffen den Spieler
+asteroids.forEach((a, i) => {
+  if (Math.hypot(a.x - ship.x, a.y - ship.y) < a.r + ship.size/2) {
+    hitPlayer();
+    asteroids.splice(i, 1);
+  }
+});
+
+  enemies.forEach(e=>e.update());
+  if (boss) boss.update();
+
+  // 4) Deine Bullets-Kollisionen
+  for (let i = bullets.length - 1; i >= 0; i--){
+    const b = bullets[i];
+    b.update();
+
+    // a) Feindliche Projektile abfangen
+    let removed = false;
+    for (let k = enemyBullets.length - 1; k >= 0; k--){
+      const eb = enemyBullets[k];
+      if (Math.hypot(b.x-eb.x, b.y-eb.y) < b.r + eb.r){
+        bullets.splice(i,1);
+        enemyBullets.splice(k,1);
+        score += 5; updateUI();
+        removed = true;
+        break;
+      }
+    }
+    if (removed) continue;
+
+    // b) Bildschirmrand
+    if (b.y < 0){
+      bullets.splice(i,1);
+      continue;
+    }
+
+    // c) Asteroiden
+    removed = false;
+    for (let j = asteroids.length - 1; j >= 0; j--){
+      const a = asteroids[j];
+      if (Math.hypot(b.x-a.x, b.y-a.y) < a.r + b.r){
+        splitAsteroid(a);
+        asteroids.splice(j,1);
+        bullets.splice(i,1);
+        score += 10; updateUI();
+        removed = true;
+        break;
+      }
+    }
+    if (removed) continue;
+
+    // d) Gegner
+    removed = false;
+    for (let j = enemies.length - 1; j >= 0; j--){
+      const e = enemies[j];
+      if (Math.hypot(b.x-e.x, b.y-e.y) < e.size/2 + b.r){
+        e.health--;
+        bullets.splice(i,1);
+        if (e.health <= 0){
+          enemies.splice(j,1);
+          score += 30; updateUI();
+        }
+        removed = true;
+        break;
+      }
+    }
+    if (removed) continue;
+
+    // e) Boss
+    if (boss && Math.hypot(b.x-boss.x, b.y-(boss.y+boss.size/2)) < boss.size/2 + b.r){
+      boss.health--;
+      bullets.splice(i,1);
+      if (boss.health <= 0){
+        score += 200;
+        boss = null;
+        updateUI();
+      }
+    }
+  }
+
+  // 5) PowerUps bewegen & aufsammeln
+  powerups.forEach((p,i)=>{
+    p.update();
+    if (p.y > H){
+      powerups.splice(i,1);
+    } else if (Math.hypot(p.x-ship.x, p.y-ship.y) < ship.size){
+      activatePower(p.type);
+      powerups.splice(i,1);
+    }
+  });
+
+  // 6) Draw all
+  draw();
+}
+
+
+    function draw(){
+      ctx.clearRect(0,0,W,H);
+      ship.draw(); laser.draw();
+      bullets.forEach(b=>b.draw());
+      asteroids.forEach(a=>a.draw());
+      enemies.forEach(e=>e.draw());
+      enemyBullets.forEach(b=>b.draw());
+      if (boss){ boss.draw(); bossBullets.forEach(b=>b.draw()); }
+      powerups.forEach(p=>p.draw());
+    }
+
+    function loop(){
+      spawn(); update(); draw();
+      gameLoopId=requestAnimationFrame(loop);
+    }
+
+    function hitPlayer(){
+      lives--; updateUI(); playSound(100,0.3);
+      if (lives<=0) gameOver();
+    }
+    
+
+
+
+    function startGame(){
+      document.getElementById('startScreen').style.display='none';
+      document.getElementById('ui').style.display='block';
+      ['leftBtn','rightBtn','shootBtn'].forEach(id=>document.getElementById(id).style.display='block');
+      score=0; lives=3; powerActive=''; powerTimer=0;
+      ship=new Ship(); bullets=[]; asteroids=[]; enemies=[]; enemyBullets=[]; powerups=[]; boss=null; bossBullets=[];
+      updateUI(); loop();
+    }
+
+    function activatePower(type){
+      if (type==='life' && lives<3) lives++;
+      else if (type==='laser'){ ship.laser=true; powerActive='Laser'; powerTimer=180; }
+      else if (type==='nuke'){
+        score += asteroids.length*10 + enemies.length*30 + (boss?200:0);
+        asteroids=[]; enemies=[]; if(boss) boss=null;
+        enemyBullets=[]; bossBullets=[];
+      }
+      if (laserTimer > 0) {
+        laserTimer--;
+        laser.update();
+      } else if (powerActive === 'laser') {
+        powerActive = null;
+      }
+      updateUI();
+    }
+
+    function updateUI(){
+  document.getElementById('score').innerText = 'score: ' + score;
+  document.getElementById('lives').innerText = 'lives: ' + lives;
+  document.getElementById('highscore').innerText = 'highscore: ' + highScore;
+
+  const powerEl = document.getElementById('power');
+  if (powerActive === 'laser') {
+    powerEl.innerText = 'Power: Laser';
+    powerEl.style.display = 'block';
+  } else {
+    powerEl.innerText = '';
+    powerEl.style.display = 'none';
+  }
+}
+
+
+    function gameOver(){
+      cancelAnimationFrame(gameLoopId);
+      if(score>highScore) localStorage.setItem('highScore',score);
+      alert('Game Over! Score: '+score);
+      location.reload();
+    }
+
+    // Steuerung
+        addEventListener('keydown', e=>{
+    if(e.key==='ArrowLeft') leftPressed=true;
+    if(e.key==='ArrowRight') rightPressed=true;
+    if(e.key===' '||e.key==='ArrowUp') ship.shoot();
+    });
+
+
+    
+    addEventListener('keyup', e=>{
+      if(e.key==='ArrowLeft') leftPressed=false;
+      if(e.key==='ArrowRight') rightPressed=false;
+    });
+    const leftBtn=document.getElementById('leftBtn'),
+          rightBtn=document.getElementById('rightBtn'),
+          shootBtn=document.getElementById('shootBtn');
+    leftBtn.addEventListener('mousedown',()=>leftPressed=true);
+    leftBtn.addEventListener('mouseup',()=>leftPressed=false);
+    rightBtn.addEventListener('mousedown',()=>rightPressed=true);
+    rightBtn.addEventListener('mouseup',()=>rightPressed=false);
+    shootBtn.addEventListener('click',()=>ship.shoot());
+    shootBtn.addEventListener('touchstart',e=>{e.preventDefault();ship.shoot();});
+    document.getElementById('startBtn').addEventListener('click', startGame);
+
+    // Sound
+    const AudioContext=window.AudioContext||window.webkitAudioContext, audioCtx=new AudioContext();
+    function playSound(freq,dur){
+      const osc=audioCtx.createOscillator(), g=audioCtx.createGain();
+      osc.connect(g); g.connect(audioCtx.destination);
+      osc.type='square'; osc.frequency.value=freq;
+      g.gain.setValueAtTime(0.1,audioCtx.currentTime);
+      osc.start(); osc.stop(audioCtx.currentTime+dur);
+    }
+  </script>
+</body>
+</html>
