@@ -551,6 +551,12 @@ asteroids.forEach((a, i) => {
     leftBtn.addEventListener('mouseup',()=>leftPressed=false);
     rightBtn.addEventListener('mousedown',()=>rightPressed=true);
     rightBtn.addEventListener('mouseup',()=>rightPressed=false);
+    
+    leftBtn.addEventListener('touchstart', e => { e.preventDefault(); leftPressed = true; });
+    leftBtn.addEventListener('touchend',   e => { e.preventDefault(); leftPressed = false; });
+    rightBtn.addEventListener('touchstart', e => { e.preventDefault(); rightPressed = true; });
+    rightBtn.addEventListener('touchend',   e => { e.preventDefault(); rightPressed = false; });
+
     shootBtn.addEventListener('click',()=>ship.shoot());
     shootBtn.addEventListener('touchstart',e=>{e.preventDefault();ship.shoot();});
     document.getElementById('startBtn').addEventListener('click', startGame);
